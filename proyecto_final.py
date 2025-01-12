@@ -48,11 +48,20 @@ El líder del equipo revisará tus preguntas y plan de trabajo. Las preguntas se
 
 '''
 
-import pandas as pd
+
+import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+import seaborn as sns
 import zipfile
 import os
+
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (classification_report, confusion_matrix, roc_auc_score, roc_curve, accuracy_score)
+from sklearn.preprocessing import StandardScaler
+
 
 # Ruta al archivo zip cargado y al directorio de extracción
 zip_file_path = 'datasets/final_provider.zip'
@@ -236,5 +245,181 @@ Escalado:
 
 Las variables numéricas MonthlyCharges y TotalCharges se escalaron usando StandardScaler para que tengan una media de 0 y una desviación estándar de 1, lo cual beneficia a ciertos modelos que son sensibles a la escala.
 '''
+
+
+'''
+Siguientes pasos:
+
+Dividir los datos en conjuntos de entrenamiento, validación y prueba.  
+Realizar un análisis inicial de las características para determinar su correlación con el objetivo (churn).
+Entrenar un modelo base para evaluar métricas preliminares.
+'''
+
+
+# 1. Preparar la columna objetivo
+# Transformar 'EndDate' en una variable binaria
+merged_data['Churn'] = (merged_data['EndDate'] == 'No').astype(int)
+
+
+# Verificar la distribución del objetivo
+print("\nDistribución de la variable objetivo (Churn):")
+print(merged_data['Churn'].value_counts(normalize=True))
+
+
+# Definir la característica objetivo
+target = 'Churn'
+X = merged_data.drop(columns=['EndDate', target])  # Eliminamos 'EndDate' ya que se convierte en el objetivo
+y = merged_data[target]
+
+
+# 2. Dividir datos en entrenamiento, validación y prueba
+# Dividimos el conjunto en entrenamiento+validación (80%) y prueba (20%)
+X_train_val, X_test, y_train_val, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+
+# Dividimos el conjunto de entrenamiento+validación en entrenamiento (70%) y validación (30%)
+X_train, X_val, y_train, y_val = train_test_split(X_train_val, y_train_val, test_size=0.3, random_state=42, stratify=y_train_val)
+
+
+#Idenftificar columnas no numéricas
+non_numeric_columns = X_train.select_dtypes(include=['object']).columns
+print("Columnas no numéricas:", non_numeric_columns)
+
+
+# Revisar los valores unicos de las columnas problematicas
+for column in non_numeric_columns:
+    print(f"Valores únicos en {column}: {X_train[column].unique()}")
+
+
+encoder = OneHotEncoder(handle_unknown='ignore', sparse=False)
+X_train_encoded = pd.DataFrame(encoder.fit_transform(X_train[non_numeric_columns]))
+X_train_encoded.index = X_train.index  # Ajustar el índice
+
+
+# Combinar columnas codificadas con las demás numéricas
+X_train = X_train.drop(non_numeric_columns, axis=1)
+X_train = pd.concat([X_train, X_train_encoded], axis=1)
+
+
+# Verificar tamaños de los conjuntos
+print(f"\nTamaños de los conjuntos:")
+print(f"Entrenamiento: {X_train.shape}, Validación: {X_val.shape}, Prueba: {X_test.shape}")
+
+
+'''
+Es necesario identificar las columnas catégoricas y excluirlas antes de calcular la matriz de correlación.
+'''
+
+
+# 3. Análisis inicial de características
+# Convertir la columna objetivo a numérica si es necesario
+merged_data[target] = merged_data[target].astype(int)
+
+
+# Identificar columnas categóricas y eliminarlas para la correlación
+categorical_columns = merged_data.select_dtypes(include=['object']).columns
+merged_data_numeric = merged_data.drop(columns=categorical_columns)
+
+
+# Asegurar que 'EndDate' no está en los datos
+if 'EndDate' in merged_data_numeric.columns:
+    merged_data_numeric.drop(columns=['EndDate'], inplace=True)
+
+
+# Calcular la correlación entre las variables numéricas
+correlation = merged_data_numeric.corr()
+
+
+# Mostrar correlación con el objetivo
+print("\nCorrelación con el objetivo (Churn):")
+print(correlation[target].sort_values(ascending=False))
+
+
+# Visualización de la matriz de correlación
+plt.figure(figsize=(10, 8))
+sns.heatmap(correlation, annot=True, cmap="coolwarm", fmt=".2f")
+plt.title("Mapa de correlación de las características")
+plt.show()
+
+
+# Distribución del objetivo
+plt.figure(figsize=(6, 4))
+sns.countplot(x=y, palette="viridis", hue=y, legend=False)
+#sns.countplot(x=y, palette="viridis")
+plt.title("Distribución de la variable objetivo (Churn)")
+plt.xlabel("Churn")
+plt.ylabel("Número de clientes")
+plt.show()
+
+
+'''
+Se procede con el entrenamiento de un modelo base. Utilizando una regresión logística, ya que es simple, interpretable y adecuada para establecer métricas iniciales. 
+Luego se evaluará el desempeño del modelo utilizando AUC-ROC y precisión.
+'''
+
+
+# 4. Escalado de las características numéricas
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_val_scaled = scaler.transform(X_val)
+
+
+# 5. Entrenar el modelo base (Regresión Logística)
+model = LogisticRegression(random_state=42, max_iter=1000)
+model.fit(X_train_scaled, y_train)
+
+
+# 6. Predicciones y evaluación
+y_val_pred = model.predict(X_val_scaled)
+y_val_proba = model.predict_proba(X_val_scaled)[:, 1]
+
+
+# Cálculo de métricas
+auc_roc = roc_auc_score(y_val, y_val_proba)
+accuracy = accuracy_score(y_val, y_val_pred)
+
+
+# Mostrar resultados
+print(f"\nAUC-ROC en conjunto de validación: {auc_roc:.3f}")
+print(f"Precisión en conjunto de validación: {accuracy:.3f}")
+print("\nMatriz de confusión:")
+print(confusion_matrix(y_val, y_val_pred))
+print("\nReporte de clasificación:")
+print(classification_report(y_val, y_val_pred))
+
+
+'''
+La distribución de la variable objetivo muestra un claro desbalance de clases, con el 73.46% de los datos pertenecientes a la clase 1 (probablemente clientes que cancelaron) y solo el 26.54% a la clase 0. 
+Este desequilibrio debe abordarse antes de entrenar el modelo para mejorar su desempeño.
+'''
+
+'''
+Se implementa la ponderación de clases para manejar el desbalance de las clases. 
+La librería LogisticRegression de scikit-learn permite configurar el parámetro class_weight en 'balanced' para ajustar automáticamente los pesos de las clases en función de su frecuencia.
+'''
+
+
+# 5. Entrenar el modelo base con ponderación de clases (Regresión Logística)
+model = LogisticRegression(random_state=42, max_iter=1000, class_weight='balanced')
+model.fit(X_train_scaled, y_train)
+
+
+# 6. Predicciones y evaluación
+y_val_pred = model.predict(X_val_scaled)
+y_val_proba = model.predict_proba(X_val_scaled)[:, 1]
+
+
+# Cálculo de métricas
+auc_roc = roc_auc_score(y_val, y_val_proba)
+accuracy = accuracy_score(y_val, y_val_pred)
+
+
+# Mostrar resultados
+print(f"\nAUC-ROC en conjunto de validación: {auc_roc:.3f}")
+print(f"Precisión en conjunto de validación: {accuracy:.3f}")
+print("\nMatriz de confusión:")
+print(confusion_matrix(y_val, y_val_pred))
+print("\nReporte de clasificación:")
+print(classification_report(y_val, y_val_pred))
 
 
